@@ -1,0 +1,23 @@
+name: parafoil
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.8.20
+  - pip
+  # Core scientific stack
+  - numpy=1.24.*
+  - scipy=1.10.*
+  - matplotlib=3.7.*
+  - gymnasium=0.28.*
+  - shimmy=0.2.*
+  - tensorboard=2.14.*
+  - psutil
+  # PyTorch with CUDA 12.1 (requires recent NVIDIA driver)
+  - pytorch=2.1.*
+  - pytorch-cuda=12.1
+  # RL
+  - stable-baselines3=2.3.0
+  - pip:
+      - 

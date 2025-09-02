@@ -1,0 +1,33 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Editors/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build & dist
+build/
+dist/
+*.egg-info/
+
+# Runtime outputs
+run/
+
+# Data and large logs (use Git LFS if needed)
+data/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Misc
+.env
+.venv
+.mypy_cache/
+.pytest_cache/
+
