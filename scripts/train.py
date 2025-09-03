@@ -4,6 +4,7 @@ import argparse
 from datetime import datetime
 
 from env import make_env
+from scripts.callbacks import CustomEvalCallback
 
 
 def main():
@@ -70,7 +71,15 @@ def main():
     with open(os.path.join(run_dir, "config.json"), "w") as f:
         json.dump({"args": vars(args), "n_envs": n_envs}, f, indent=2)
 
-    model.learn(total_timesteps=args.total_timesteps)
+    # Evaluation callback: save plots/metrics into run_dir
+    eval_cb = CustomEvalCallback(
+        make_env_fn=lambda: make_env(ref_type=args.ref),
+        run_dir=run_dir,
+        eval_freq=10000,
+        n_eval_episodes=2,
+    )
+
+    model.learn(total_timesteps=args.total_timesteps, callback=eval_cb)
 
     # Save artifacts into run_dir
     model.save(os.path.join(run_dir, "model.zip"))
@@ -80,4 +89,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
