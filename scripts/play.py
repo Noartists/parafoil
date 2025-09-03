@@ -32,16 +32,21 @@ def main():
     model = PPO.load(model_path)
 
     obs = env.reset()
-    for step in range(args.max_steps):
+    done_flag = False
+    step = 0
+    while step < args.max_steps and not done_flag:
         action, _ = model.predict(obs, deterministic=True)
-        obs, reward, done, info = env.step(action)
+        obs, reward, dones, info = env.step(action)
         if args.sleep > 0:
             time.sleep(args.sleep)
-        if done:
-            print("Episode finished.")
-            break
+        try:
+            done_flag = bool(dones[0])
+        except Exception:
+            done_flag = bool(dones)
+        step += 1
+    if done_flag:
+        print("Episode finished.")
 
 
 if __name__ == "__main__":
     main()
-

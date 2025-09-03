@@ -85,19 +85,18 @@ class CustomEvalCallback(BaseCallback):
 
     def _rollout_one(self, vec_env) -> dict:
         obs = vec_env.reset()
-        done = False
+        done_flag = False
         data = {k: [] for k in ['t','x','y','z','ref_x','ref_y','ref_z','phi','theta','psi','vx','vy','vz','thr','left','right','e_px','e_py','e_pz','e_psi']}
-        while not done:
+        while not done_flag:
             action, _ = self.model.predict(obs, deterministic=True)
-            obs, reward, done, infos = vec_env.step(action)
-            # Access underlying raw env
-            raw = vec_env.venv.envs[0]
-            try:
-                # For VecNormalize, raw is the underlying DummyVecEnv; take its envs[0]
-                if isinstance(raw, VecNormalize):
-                    raw = raw.venv.envs[0]
-            except Exception:
-                pass
+            obs, reward, dones, infos = vec_env.step(action)
+            # Access underlying raw env (unwrap VecNormalize/DummyVecEnv)
+            base = vec_env
+            # unwrap VecNormalize
+            if hasattr(base, 'venv'):
+                base = base.venv
+            # base should be DummyVecEnv now
+            raw = getattr(base, 'envs', [None])[0]
             e = raw
             y = e.state
             t = e.t
@@ -115,6 +114,11 @@ class CustomEvalCallback(BaseCallback):
             data['vx'].append(float(vx)); data['vy'].append(float(vy)); data['vz'].append(float(vz))
             data['thr'].append(thr); data['left'].append(left); data['right'].append(right)
             data['e_px'].append(float(epx)); data['e_py'].append(float(epy)); data['e_pz'].append(float(epz)); data['e_psi'].append(float(epsi))
+            # Determine done flag for single-env vec
+            try:
+                done_flag = bool(dones[0])
+            except Exception:
+                done_flag = bool(dones)
         return data
 
     @staticmethod
@@ -145,4 +149,3 @@ class CustomEvalCallback(BaseCallback):
             if not exists:
                 writer.writeheader()
             writer.writerow(metrics)
-

@@ -24,14 +24,18 @@ def run_eval(model_path: str, vecnorm_path: str, episodes: int = 3):
 
     for ep in range(episodes):
         obs = env.reset()
-        done = False
+        done_flag = False
         ep_len = 0
         ep_rew = 0.0
-        while not done:
+        while not done_flag:
             action, _ = model.predict(obs, deterministic=True)
-            obs, reward, done, info = env.step(action)
+            obs, reward, dones, info = env.step(action)
             ep_rew += float(reward)
             ep_len += 1
+            try:
+                done_flag = bool(dones[0])
+            except Exception:
+                done_flag = bool(dones)
         print(f"Episode {ep}: len={ep_len}, return={ep_rew:.2f}")
 
 
@@ -48,4 +52,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

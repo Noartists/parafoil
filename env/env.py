@@ -108,6 +108,12 @@ class ParafoilEnv(gym.Env):
         max_episode_steps: int = 2000,
         action_limits: Optional[Dict[str, float]] = None,
         actuator_tau: float = 0.15,
+        # Wind configuration (hidden from observation by default)
+        wind_mode: str = "none",  # none | const | ou | sin
+        wind_mean_max: float = 5.0,  # max horizontal mean wind [m/s]
+        gust_sigma: float = 1.0,     # OU noise std [m/s]
+        gust_tau: float = 5.0,       # OU time constant [s]
+        wind_include_in_obs: bool = False,  # if True, append wind to obs for debugging
         seed: Optional[int] = None,
     ) -> None:
         super().__init__()
@@ -121,6 +127,15 @@ class ParafoilEnv(gym.Env):
         self.actuator_tau = actuator_tau
         self._rng = np.random.default_rng(seed)
 
+        # Wind config
+        self.wind_mode = wind_mode
+        self.wind_mean_max = wind_mean_max
+        self.gust_sigma = gust_sigma
+        self.gust_tau = gust_tau
+        self.wind_include_in_obs = wind_include_in_obs
+        self._wind_mean = np.zeros(3)
+        self._wind_state = np.zeros(3)
+
         # Parameters instance used by the dynamics
         self.para = ParaParams()
 
@@ -133,7 +148,7 @@ class ParafoilEnv(gym.Env):
 
         # Gym spaces
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32)
-        # obs: [e_p(3), e_v(3), e_psi(1), w(3), thetar, psir, speed]
+        # obs: [e_p(3), e_v(3), e_psi(1), w(3), thetar, psir, speed] (+ optional wind)
         high_obs = np.array([
             1e3, 1e3, 1e3,  # position error
             1e2, 1e2, 1e2,  # velocity error
@@ -142,6 +157,8 @@ class ParafoilEnv(gym.Env):
             math.pi, math.pi,  # thetar, psir
             1e2,              # speed
         ], dtype=np.float32)
+        if self.wind_include_in_obs:
+            high_obs = np.concatenate([high_obs, np.array([50.0, 50.0, 50.0], dtype=np.float32)])
         self.observation_space = spaces.Box(low=-high_obs, high=high_obs, dtype=np.float32)
 
         # Internal state
@@ -178,6 +195,7 @@ class ParafoilEnv(gym.Env):
             self._rng = np.random.default_rng(seed)
 
         self.para = ParaParams()
+        self._init_wind()
 
         # Randomize initial state near reference
         pos0 = np.array([
@@ -240,9 +258,13 @@ class ParafoilEnv(gym.Env):
             self._last_cmd[2] += alpha * dR
 
             # Write to para
+            # Update wind
+            self._update_wind(self.dt_sub)
             self.para.left = float(np.clip(self._last_cmd[1], -self.defl_max, self.defl_max))
             self.para.right = float(np.clip(self._last_cmd[2], -self.defl_max, self.defl_max))
             self.para.thrust = np.array([[self._last_cmd[0]], [0.0], [0.0]])
+            # Set wind in inertial frame as column vector
+            self.para.vw = np.array(self._wind_state.reshape(3, 1))
 
             # Integrate dynamics
             self.state = rk4_step(parafoil_model, self.state, self.t, self.dt_sub, self.para)
@@ -271,14 +293,17 @@ class ParafoilEnv(gym.Env):
         e_psi = self._wrap_angle(psi - yaw_ref)
         speed = float(np.linalg.norm(v))
 
-        obs = np.array([
+        obs_list = [
             e_p[0], e_p[1], e_p[2],
             e_v[0], e_v[1], e_v[2],
             e_psi,
             w[0], w[1], w[2],
             thetar, psir,
             speed,
-        ], dtype=np.float32)
+        ]
+        if self.wind_include_in_obs:
+            obs_list += [self._wind_state[0], self._wind_state[1], self._wind_state[2]]
+        obs = np.array(obs_list, dtype=np.float32)
         return obs
 
     # --- Reward ---
@@ -316,6 +341,44 @@ class ParafoilEnv(gym.Env):
     @staticmethod
     def _wrap_angle(a: float) -> float:
         return (a + math.pi) % (2 * math.pi) - math.pi
+
+    # --- Wind helpers ---
+    def _init_wind(self):
+        if self.wind_mode == "none":
+            self._wind_mean = np.zeros(3)
+        elif self.wind_mode == "const":
+            spd = self._rng.uniform(0.0, self.wind_mean_max)
+            ang = self._rng.uniform(-math.pi, math.pi)
+            self._wind_mean = np.array([spd * math.cos(ang), spd * math.sin(ang), 0.0])
+        elif self.wind_mode == "sin":
+            spd = self._rng.uniform(0.0, self.wind_mean_max)
+            ang = self._rng.uniform(-math.pi, math.pi)
+            self._wind_mean = np.array([spd * math.cos(ang), spd * math.sin(ang), 0.0])
+        else:  # ou
+            spd = self._rng.uniform(0.0, self.wind_mean_max)
+            ang = self._rng.uniform(-math.pi, math.pi)
+            self._wind_mean = np.array([spd * math.cos(ang), spd * math.sin(ang), 0.0])
+        self._wind_state = self._wind_mean.copy()
+
+    def _update_wind(self, dt: float):
+        if self.wind_mode == "none":
+            self._wind_state = np.zeros(3)
+        elif self.wind_mode == "const":
+            self._wind_state = self._wind_mean
+        elif self.wind_mode == "sin":
+            # Slow sinusoidal variation around mean in horizontal plane
+            t = self.t
+            wfreq = 0.05  # Hz approx (rad/s ~ 0.3)
+            amp = 0.5 * self.wind_mean_max
+            dx = amp * math.sin(2 * math.pi * wfreq * t)
+            dy = amp * math.cos(2 * math.pi * wfreq * t)
+            self._wind_state = self._wind_mean + np.array([dx, dy, 0.0])
+        else:  # ou gust
+            theta = 1.0 / max(self.gust_tau, 1e-3)
+            sigma = self.gust_sigma
+            mu = self._wind_mean
+            dW = theta * (mu - self._wind_state) * dt + sigma * math.sqrt(max(dt, 1e-6)) * self._rng.normal(0.0, 1.0, size=3)
+            self._wind_state = self._wind_state + dW
 
 
 def make_env(**kwargs) -> ParafoilEnv:
