@@ -11,7 +11,7 @@ class ADRCYawSpeed:
     def __init__(self, speed_ref: float = 8.5, Ts: float = 0.04,
                  kp_pos: float = 0.03, kd_pos: float = 0.05,
                  # Symmetric brake parameters
-                 kp_v: float = 0.2, ki_v: float = 0.05,
+                 kp_v: float = 0.4, ki_v: float = 0.05,
                  d_s_max: float = 0.4, yaw_reserve: float = 0.15,
                  speed_deadband: float = 0.2, defl_max: float = 1.0):
         self.Ts = Ts
@@ -83,18 +83,18 @@ class ADRCYawSpeed:
         u_yaw_raw = u_yaw
         u_yaw = float(np.clip(u_yaw, -1.0, 1.0))
 
-        # Speed control with symmetric braking (corrected logic)
-        brake_error_raw = speed - self.speed_ref  # positive = overspeed, need braking
+        # Speed control with symmetric braking (new approach)
+        e_spd_raw = self.speed_ref - speed
         # Apply deadband to prevent oscillation
-        brake_error = brake_error_raw if abs(brake_error_raw) > self.speed_deadband else 0.0
+        e_spd = e_spd_raw if abs(e_spd_raw) > self.speed_deadband else 0.0
 
         # Symmetric brake PI controller
-        d_s_cmd = self.kp_v * brake_error + self.ki_v * self._ei_v
+        d_s_cmd = self.kp_v * e_spd + self.ki_v * self._ei_v
         d_s_cmd = np.clip(d_s_cmd, 0.0, self.d_s_max)
 
         # Anti-windup: pause integration if saturated and still pushing same direction
-        if not (d_s_cmd >= self.d_s_max and brake_error > 0):
-            self._ei_v += brake_error
+        if not (d_s_cmd >= self.d_s_max and e_spd > 0):
+            self._ei_v += e_spd
 
         # Update symmetric brake state (could add rate limiting here)
         self._d_s = d_s_cmd
@@ -130,14 +130,14 @@ class PIDController:
         self,
         kp_pos: float = 0.03,
         kd_pos: float = 0.05,
-        kp_yaw: float = 0.5,
-        kd_yaw: float = 0.1,
-        speed_ref: float = 12.0,
-        kp_spd: float = 0.1,
-        ki_spd: float = 0.02,
+        kp_yaw: float = 1.0,
+        kd_yaw: float = 0.3,
+        speed_ref: float = 8.5,
+        kp_spd: float = 0.2,
+        ki_spd: float = 0.05,
         # Symmetric brake parameters
-        kp_v: float = 0.1,
-        ki_v: float = 0.02,
+        kp_v: float = 0.4,
+        ki_v: float = 0.05,
         d_s_max: float = 0.4,
         yaw_reserve: float = 0.15,
         speed_deadband: float = 0.2,
@@ -172,7 +172,6 @@ class PIDController:
         self._ei_spd = 0.0
         self._ei_v = 0.0
         self._d_s = 0.0
-        self._step_count = 0
 
     def act(self, obs: np.ndarray) -> np.ndarray:
         # Extract errors and states
@@ -202,18 +201,18 @@ class PIDController:
         thrust_bias = 0  # altitude control disabled for now
         u_yaw = float(np.clip(u_yaw, -1.0, 1.0))
 
-        # Speed control with symmetric braking (corrected logic)
-        brake_error_raw = speed - self.speed_ref  # positive = overspeed, need braking
+        # Speed control with symmetric braking (new approach)
+        e_spd_raw = self.speed_ref - speed
         # Apply deadband to prevent oscillation
-        brake_error = brake_error_raw if abs(brake_error_raw) > self.speed_deadband else 0.0
+        e_spd = e_spd_raw if abs(e_spd_raw) > self.speed_deadband else 0.0
 
         # Symmetric brake PI controller
-        d_s_cmd = self.kp_v * brake_error + self.ki_v * self._ei_v
+        d_s_cmd = self.kp_v * e_spd + self.ki_v * self._ei_v
         d_s_cmd = np.clip(d_s_cmd, 0.0, self.d_s_max)
 
         # Anti-windup: pause integration if saturated and still pushing same direction
-        if not (d_s_cmd >= self.d_s_max and brake_error > 0):
-            self._ei_v += brake_error
+        if not (d_s_cmd >= self.d_s_max and e_spd > 0):
+            self._ei_v += e_spd
 
         # Update symmetric brake state (could add rate limiting here)
         self._d_s = d_s_cmd
@@ -225,7 +224,7 @@ class PIDController:
         # Optional: thrust compensation for symmetric brake
         k_comp = 0.1  # compensation factor
         u_spd += k_comp * self._d_s  # compensate for brake-induced drag
-        a_thr = float(np.clip(u_spd, 0.0, 1.0))
+        a_thr = float(np.clip(u_spd, 0.2, 1.0))
 
         # Control allocation: baseline d_s + differential yaw
         u_yaw_pos = max(0.0, u_yaw)
@@ -235,19 +234,4 @@ class PIDController:
         a_right = np.clip(self._d_s + u_yaw_pos, 0.0, self.defl_max)
 
         act = np.array([2.0 * a_thr - 1.0, a_left, a_right], dtype=np.float32)
-
-        # Print tracking errors and control signals
-        if self._step_count % 100 == 0:  # Print every step
-            print(f"Step {self._step_count}: "
-                  f"e_p=[{e_p[0]:.2f}, {e_p[1]:.2f}, {e_p[2]:.2f}], "
-                  f"e_v=[{e_v[0]:.2f}, {e_v[1]:.2f}, {e_v[2]:.2f}], "
-                  f"e_yaw={e_yaw:.3f}, "
-                  f"brake_err={brake_error:.2f}")
-            print(f"Step {self._step_count}: "
-                  f"u_yaw={u_yaw:.3f}, "
-                  f"a_thr={a_thr:.3f}, "
-                  f"d_s={self._d_s:.3f}, "
-                  f"act=[{act[0]:.2f}, {act[1]:.2f}, {act[2]:.2f}]")
-
-        self._step_count += 1
         return act

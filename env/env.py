@@ -34,59 +34,60 @@ class ParaParams:
         self.gn = 9.81
         self.Rho = 1.225
 
-        # Geometry (approximate)
-        self.b = 2.0  # span [m]
-        self.c = 0.7  # chord [m]
-        self.t = 0.15  # thickness scale [m]
-        self.As = self.b * self.c  # reference area [m^2]
-        self.Ap = 0.10  # payload frontal area [m^2]
+        # Geometry (small scale model from MATLAB)
+        self.b = 2.3  # span along arc [m]
+        self.Ac = 1.6  # canopy area [m^2]
+        self.c = self.Ac / self.b  # chord [m]
+        self.t = 0.15 * self.c  # thickness scale [m]
+        self.As = 1.5  # projected area [m^2]
+        self.Ap = 0.03  # payload frontal area [m^2]
 
-        # Masses
-        self.mc = 6.0  # canopy mass [kg]
-        self.mp = 4.0  # payload mass [kg]
+        # Masses (small scale model from MATLAB)
+        self.mc = 0.3  # canopy mass [kg]
+        self.mp = 12.0  # payload mass [kg]
 
-        # Installation/geometry extras
-        self.miu = 0.0
-        self.r = 1.0
-        self.sloc = 0.1
-        self.ca = math.radians(60.0)  # use radians
+        # Installation/geometry extras  
+        self.ca = 90 * math.pi / 180  # arc angle [rad] (from MATLAB)
+        self.r = self.b / self.ca  # arc radius [m]
+        self.sloc = 2 * self.r * math.sin(self.ca / 2) / self.ca  # center to CG distance [m]
+        self.miu = -7 * math.pi / 180  # installation angle [rad]
 
-        # Aerodynamic coefficients (coarse defaults)
-        self.CD0 = 0.04
-        self.CDa2 = 0.30
-        self.CDds = 0.10
-        self.CYbeta = 0.05
-        self.CL0 = 0.2
-        self.CLa = 3.0
-        self.CLds = 0.30
-        self.Clbeta = -0.05
-        self.Clp = -0.40
-        self.Clr = 0.20
-        self.Clda = 0.10
-        self.Cm0 = 0.0
-        self.Cma = -0.50
-        self.Cmq = -2.0
-        self.Cnbeta = 0.20
-        self.Cnp = -0.10
-        self.Cnr = -0.20
-        self.Cnda = 0.10
-        self.CDp = 1.0
+        # Aerodynamic coefficients (real scale)
+        self.CD0 = 0.13
+        self.CDa2 = 1.1
+        self.CDds = 0.3 * 2
+        self.CYbeta = -0.23 * 2
+        self.CL0 = 0.50
+        self.CLa = 3.5
+        self.CLds = 0.21 * 2
+        self.Clbeta = -0.037 * 2
+        self.Clp = -0.08 * 2
+        self.Clr = 0
+        self.Clda = 0.001 * 2
+        self.Cm0 = 0.1 * 2
+        self.Cma = -0.02 * 2
+        self.Cmq = -1 * 2
+        self.Cnbeta = 0
+        self.Cnp = 0
+        self.Cnr = -0.07 * 2
+        self.Cnda = -0.01 * 2
+        self.CDp = 0.4
 
-        # Coupling stiffness/damping (placeholders)
-        self.k_r = 0.5
-        self.k_f = 5.0
-        self.c_f = 0.8
-        self.k_psi = 0.5
+        # Coupling stiffness/damping (real scale)
+        self.k_r = 1.0
+        self.k_f = 0.1
+        self.c_f = 120.0
+        self.k_psi = 0.07
 
-        # Wind and attachment points
+        # Wind and attachment points (real scale)
         self.vw = np.array([[0.0], [0.0], [0.0]])  # wind in inertial frame
-        self.rcOc = np.array([[0.0], [0.0], [0.20]])
-        self.rcOp = np.array([[0.0], [0.0], [-0.50]])
+        self.rcOc = np.array([[0.0], [0.0], [2.2]])  # connection to canopy CG
+        self.rcOp = np.array([[0.0], [0.0], [-0.1]])  # connection to payload CG
 
         # Controls (to be set each step)
         self.left = 0.0
         self.right = 0.0
-        self.thrust = np.array([[0.0], [0.0], [0.0]])
+        self.thrust = np.array([[15.0], [0.0], [0.0]])  # default cruise thrust
 
 
 class ParafoilEnv(gym.Env):
@@ -101,10 +102,10 @@ class ParafoilEnv(gym.Env):
     def __init__(
         self,
         dt_env: float = 0.04,
-        n_substeps: int = 4,
+        n_substeps: int = 10,
         ref_type: str = "line",
-        ref_speed: float = 8.0,
-        ref_alt: float = 50.0,
+        ref_speed: float = 12.0,   # m/s, achievable cruise speed with current thrust
+        ref_alt: float = 230.0,   # m, realistic altitude from your data
         max_episode_steps: int = 2000,
         action_limits: Optional[Dict[str, float]] = None,
         actuator_tau: float = 0.15,
@@ -115,6 +116,8 @@ class ParafoilEnv(gym.Env):
         gust_tau: float = 5.0,       # OU time constant [s]
         wind_include_in_obs: bool = False,  # if True, append wind to obs for debugging
         seed: Optional[int] = None,
+        # Optional default init config (can be overridden per-reset via options={"init": ...})
+        init_config: Optional[Dict[str, Any]] = None,
     ) -> None:
         super().__init__()
         self.dt_env = dt_env
@@ -139,6 +142,9 @@ class ParafoilEnv(gym.Env):
         # Parameters instance used by the dynamics
         self.para = ParaParams()
 
+        # Default initial condition template (overridden by reset options)
+        self._default_init: Optional[Dict[str, Any]] = init_config
+
         # Action mapping scales (placeholders, configurable)
         lims = action_limits or {}
         self.thrust_max = lims.get("thrust_max", 10.0)  # N
@@ -148,7 +154,7 @@ class ParafoilEnv(gym.Env):
 
         # Gym spaces
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32)
-        # obs: [e_p(3), e_v(3), e_psi(1), w(3), thetar, psir, speed] (+ optional wind)
+        # obs: [e_p(3), e_v(3), e_psi(1), w(3), thetar, psir, speed] (+ optional wind) + psi (last)
         high_obs = np.array([
             1e3, 1e3, 1e3,  # position error
             1e2, 1e2, 1e2,  # velocity error
@@ -159,6 +165,8 @@ class ParafoilEnv(gym.Env):
         ], dtype=np.float32)
         if self.wind_include_in_obs:
             high_obs = np.concatenate([high_obs, np.array([50.0, 50.0, 50.0], dtype=np.float32)])
+        # Append absolute yaw psi at the end for trajectory tracking
+        high_obs = np.concatenate([high_obs, np.array([math.pi], dtype=np.float32)])
         self.observation_space = spaces.Box(low=-high_obs, high=high_obs, dtype=np.float32)
 
         # Internal state
@@ -171,7 +179,7 @@ class ParafoilEnv(gym.Env):
     def _ref(self, t: float) -> Tuple[np.ndarray, np.ndarray, float]:
         """Return (p_ref[3], v_ref[3], yaw_ref) in inertial frame."""
         if self.ref_type == "circle":
-            R = 100.0
+            R = 120.0  # larger radius for gentler turning
             w = self.ref_speed / R
             x = R * math.cos(w * t)
             y = R * math.sin(w * t)
@@ -197,43 +205,105 @@ class ParafoilEnv(gym.Env):
         self.para = ParaParams()
         self._init_wind()
 
-        # Randomize initial state near reference
-        pos0 = np.array([
-            0.0 + self._rng.normal(0, 2.0),
-            0.0 + self._rng.normal(0, 2.0),
-            self.ref_alt + self._rng.normal(0, 1.0),
-        ])
-        # small initial angles and rates
-        phi0 = self._rng.normal(0, math.radians(5))
-        theta0 = self._rng.normal(0, math.radians(5))
-        psi0 = self._rng.normal(0, math.radians(5))
+        # Build initial state from options/init_config or fallback to randomized defaults
+        init = None
+        if options is not None and isinstance(options, dict):
+            init = options.get("init", None)
+        if init is None:
+            init = self._default_init
 
-        thetar0 = 0.0
-        psir0 = 0.0
+        if init is None:
+            # Randomize initial state near reference
+            pos0 = np.array([
+                0.0 + self._rng.normal(0, 2.0),
+                0.0 + self._rng.normal(0, 2.0),
+                self.ref_alt + self._rng.normal(0, 1.0),
+            ])
+            # small initial angles and rates
+            phi0 = self._rng.normal(0, math.radians(5))
+            theta0 = self._rng.normal(0, math.radians(5))
+            psi0 = self._rng.normal(0, math.radians(5))
 
-        v0 = np.array([self.ref_speed + self._rng.normal(0, 0.5), 0.0, 0.0])
-        w0 = np.zeros(3)
-        vp0 = v0.copy()
-        ws0 = np.zeros(3)
+            thetar0 = 0.0
+            psir0 = 0.0
 
-        y = np.zeros(20)
-        y[0:3] = pos0
-        y[3:6] = np.array([phi0, theta0, psi0])
-        y[6] = thetar0
-        y[7] = psir0
-        y[8:11] = v0
-        y[11:14] = w0
-        y[14:17] = vp0
-        y[17:20] = ws0
+            v0 = np.array([self.ref_speed + self._rng.normal(0, 0.5), 0.0, 0.0])
+            w0 = np.zeros(3)
+            vp0 = v0.copy()
+            ws0 = np.zeros(3)
 
-        self.state = y
-        self.t = 0.0
-        self.steps = 0
-        self._last_cmd = np.array([0.0, 0.0, 0.0])  # [T,left,right]
+            y = np.zeros(20)
+            y[0:3] = pos0
+            y[3:6] = np.array([phi0, theta0, psi0])
+            y[6] = thetar0
+            y[7] = psir0
+            y[8:11] = v0
+            y[11:14] = w0
+            y[14:17] = vp0
+            y[17:20] = ws0
+
+            self.state = y
+            self.t = 0.0
+            self.steps = 0
+            self._last_cmd = np.array([0.0, 0.0, 0.0])  # [T,left,right]
+        else:
+            # Deterministic init from provided dict
+            def arr3(x, default):
+                a = np.array(x, dtype=float).reshape(-1) if x is not None else np.array(default, dtype=float)
+                if a.size != 3:
+                    raise ValueError("init fields must be 3-dim vectors")
+                return a
+
+            pos = arr3(init.get("pos", None), [0.0, 0.0, self.ref_alt])
+            att = arr3(init.get("att", None), [0.0, 0.0, 0.0])  # phi, theta, psi
+            v = arr3(init.get("v", None), [self.ref_speed, 0.0, 0.0])
+            w = arr3(init.get("w", None), [0.0, 0.0, 0.0])
+            vp = arr3(init.get("vp", None), v)
+            ws = arr3(init.get("ws", None), [0.0, 0.0, 0.0])
+            thetar = float(init.get("thetar", 0.0))
+            psir = float(init.get("psir", 0.0))
+
+            y = np.zeros(20)
+            y[0:3] = pos
+            y[3:6] = att
+            y[6] = thetar
+            y[7] = psir
+            y[8:11] = v
+            y[11:14] = w
+            y[14:17] = vp
+            y[17:20] = ws
+
+            self.state = y
+            self.t = 0.0
+            self.steps = 0
+
+            # Initial actuator commands (physical units)
+            act = init.get("act", {}) if isinstance(init.get("act", {}), dict) else {}
+            T0 = float(np.clip(act.get("throttle", 0.0), 0.0, self.thrust_max))
+            L0 = float(np.clip(act.get("left", 0.0), -self.defl_max, self.defl_max))
+            R0 = float(np.clip(act.get("right", 0.0), -self.defl_max, self.defl_max))
+            self._last_cmd = np.array([T0, L0, R0], dtype=float)
 
         obs = self._get_obs()
         info = {}
         return obs, info
+
+    # --- Init helpers ---
+    def set_default_init(self, init: Dict[str, Any]) -> None:
+        """Set a default initial condition used by future reset() calls unless overridden.
+
+        init keys:
+          - pos: [x,y,z]
+          - att: [phi,theta,psi]
+          - v: [vx,vy,vz]
+          - w: [wx,wy,wz]
+          - vp: [vpx,vpy,vpz]
+          - ws: [wsx,wsy,wsz]
+          - thetar: float
+          - psir: float
+          - act: {throttle: N, left: defl, right: defl}
+        """
+        self._default_init = init
 
     # --- Step ---
     def step(self, action: np.ndarray):
@@ -303,6 +373,8 @@ class ParafoilEnv(gym.Env):
         ]
         if self.wind_include_in_obs:
             obs_list += [self._wind_state[0], self._wind_state[1], self._wind_state[2]]
+        # Always append absolute yaw psi as the last element
+        obs_list += [psi]
         obs = np.array(obs_list, dtype=np.float32)
         return obs
 
@@ -324,17 +396,23 @@ class ParafoilEnv(gym.Env):
         if p[2] < 0.0:
             terminated = True
             info["event"] = "ground_impact"
-        if abs(phi) > math.radians(60) or abs(theta) > math.radians(60):
+            print(f"🚁 TERMINATED: Ground impact at altitude {p[2]:.2f}m (step {self.steps})")
+        if abs(phi) > math.radians(80) or abs(theta) > math.radians(80):
             terminated = True
             info["event"] = info.get("event", "attitude_limit")
+            print(f"🚁 TERMINATED: Attitude limit exceeded - phi={math.degrees(phi):.1f}°, theta={math.degrees(theta):.1f}° (step {self.steps})")
         if not np.isfinite(self.state).all():
             terminated = True
             info["event"] = info.get("event", "numerical")
-        if speed < 0.5:
+            print(f"🚁 TERMINATED: Numerical instability detected (step {self.steps})")
+            print(f"   State: {self.state}")
+        if speed < 2.0:  # more reasonable stall speed for parafoil
             terminated = True
             info["event"] = info.get("event", "stall")
+            print(f"🚁 TERMINATED: Stall condition - speed={speed:.2f}m/s < 2.0m/s (step {self.steps})")
         if self.steps >= self.max_episode_steps:
             truncated = True
+            print(f"✅ TRUNCATED: Maximum steps reached ({self.max_episode_steps} steps, {self.max_episode_steps*0.04:.1f}s simulation time)")
 
         return terminated, truncated, info
 

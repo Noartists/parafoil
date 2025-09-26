@@ -157,11 +157,9 @@ def parafoil_model(y,t, para):
     BB = np.concatenate((B1, B2, B3, B4, B5, B6, B7), axis=0)
 
     EE_ = EE.astype(np.float64)
-    EE_inv=np.linalg.inv(EE_)
-    dVW=np.dot(EE_inv,BB)
+    BB_ = BB.astype(np.float64)
+    dVW = np.linalg.solve(EE_, BB_)  # More numerically stable than matrix inverse
     #print(dVW)
-
-    #dVW = np.linalg.solve(EE, BB)  # Eq.(37)
     # dVW = EE\BB
     # dVW包含伞体速度、伞体角速度、负载速度、负载角速度
 
